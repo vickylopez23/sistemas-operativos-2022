@@ -1,0 +1,145 @@
+# Grupo: 20
+### Integrantes:
+Victoria Lopez, Email: victorialopez23@mi.unc.edu.ar
+Tomas Ponce Gessi, Email: tomaspgessi@mi.unc.edu.ar
+Jeremias Baez, Email: jeremias.baez@mi.unc.edu.ar
+
+
+## Primera Parte: Estudiando el planificador de xv6
+
+
+__1) ¿Qué política de planificación utiliza xv6 para elegir el próximo proceso a ejecutarse?__  
+__Respuesta__ : XV6 utiliza el modelo de scheduler Round Robin (RR), es decir que los procesos se ejecutan secuencialmente hasta que retornan el control o se acaba el quantum de la CPU en la que corren. 
+
+__2) Analizar el código que interrumpe a un proceso al final de su quantum y responda:__  
+
+__A) ¿Cuánto dura un quantum en xv6?__  
+__Respuesta__: El quantum de XV6 dura 1000000 ciclos.
+Obtuvimos la respuesta de:
+start.c → timerinit() → Se inicializa el quantum en 1000000 ciclos, aproximadamente 1 décimo de segundo en QEMU (aproximadamente)
+
+__B) ¿Cuánto dura un cambio de contexto en xv6?__  
+__Respuesta__:El context switch o cambio de contexto se comprende de 29 instrucciones en XV6, de las cuales 14 guardan en memoria datos, otras 14 restauran en memoria datos y una más que es una instrucción de retorno. Si bien es muy complicado realizar la medición de tiempo, es claro ver que este costo no es tan grande, salvo que se produzcan reiteradamente cambios de contextos en lapsos de microsegundos.
+
+ 
+ __C) ¿El cambio de contexto consume tiempo de un quantum?__    
+__Respuesta:__ Si, de la manera que está definida la función timervec, cada vez que se ejecuta se realiza la suma de un quantum completo al temporizador local del core, el cual determina cuándo se realizará un timer interrupt. Lo anteriormente mencionado no es dependiente del proceso sino de cada CPU y por ende todo el tiempo cuenta, particularmente cuando se hace el context switch. 
+
+ 
+__D) ¿Hay alguna forma de que a un proceso se le asigne menor tiempo?__ 
+__Respuesta:__ Si, el proceso puede hacer sleep y en base a la implementación actual del scheduler de XV6 (RR) el proceso cedería su turno y tendría que esperar a que el resto de procesos tengan una ronda de ejecución. Por otro lado, también es posible modificar el quantum para que sea único por proceso y el quantum no sea compartido entre procesos si es que alguno se bloqueo.
+ 
+
+
+## Segunda Parte: Mediciones con el Scheduler RR por defecto:  
+
+__Condiciones de testeo:__  
+  - En cpubench.c se reemplazó el tipo __FLOAT__ de los arreglos bidimensionales “a”, “b”, “c” por INT y lo mismo en la variable beta de la función main().  
+  - Cada test se ejecutó durante un lapso de tiempo de 10 m en cada caso.  
+  - __Versión QEMU 4.2.__  
+
+__Casos:__  
+  - IOBench solo.  
+  - CPUBench solo.  
+  - IOBench y CPUBench juntos.  
+  - Dos IOBench juntos.  
+  - Dos CPUBench juntos.  
+
+### __Resultados de las mediciones realizadas:__  
+##  Casos 1 al 5 con Quantum = 1000000, Min Ticks = 100
+
+![](https://preview.redd.it/c3913xlt7uv91.png?width=640&format=png&auto=webp&s=dd9c2297467d5a3b856e36795f706888f6fa9624)
+
+
+##  Casos 1 al 5 con Quantum = 100000, Min Ticks = 1000
+
+![](https://preview.redd.it/mzxmzivr7uv91.png?width=640&format=png&auto=webp&s=9fcee4ad77ca71a40d8a0da1dd6736422189e089)
+
+## Casos 1 al 5 con Quantum = 10000, Min Ticks = 10000
+
+![](https://preview.redd.it/jj4m7gvr7uv91.png?width=640&format=png&auto=webp&s=c60b75dda3c7b6507780b10364524f4bce4dc6f2 )
+
+##  Casos 1 al 5 con Quantum = 1000, Min Ticks = 100000
+
+![](https://preview.redd.it/782er7ur7uv91.png?width=640&format=png&auto=webp&s=4649b75ef337adfb0f683b0d437910aed5e30206 )
+
+
+
+__Conclusiones de esta ronda de mediciones:__
+
+Después de realizar todos los testeos pertinentes los resultados obtenidos en general son coherentes, es decir, expresan el comportamiento esperado.
+Para entender bien porque veamos el comportamiento de CPUBench e IOBench:  
+  - __CPUBench__ es un proceso que realiza 12.582.912 operaciones de producto de enteros por ciclo de for, en otras palabras es un proceso cpu-bound, está constantemente consumiendo recursos de procesador.   
+  - Por otro lado __OBench__ lee 32 veces 16 bytes de un archivo y escribe 32 veces 16 bytes en un archivo, este es el caso de un proceso IO-Bound.
+
+
+Dado el modelo de scheduler RR, CPUBench está constantemente utilizando el quantum que se le asigna, entonces a mayor cuantum mayor será la cantidad de operaciones que logre realizar, que claramente ocurre en los casos de testeo. Otra consecuencia que se puede deducir y se ve reflejada es la relación cantidad de procesos CPU-Bound y rendimiento, a mayor número de procesos corriendo en time sharing, menor será la cantidad de operaciones realizadas por proceso por unidad de tiempo.
+
+Desde el lado de IOBench en general se mantiene constante el valor de operaciones para cualquier quantum, ya que el tiempo de CPU que consume es mínimo, entonces antes de una interrupción por tiempo ocurre una interrupción por dispositivo. Solo en el escenario 3 con un quantum de 1000 se ve como desciende la cantidad de IO en todos los casos, esto debido a que si bien es un proceso altamente interactivo, sigue consumiendo recursos de procesamiento lo cual con un quantum tan pequeño, el rendimiento se ve afectado.
+
+Una particularidad en el caso IO y CPU, aca se ve mayormente afectado el resultado de IO con respecto a los otros casos, consecuencia de compartir cpu con un procesos CPU-Bound, esto es porque cada vez que el proceso IO-Bound realiza una operación de lectura/escritura debe esperar a que finalice el quantum actual para que pueda continuar con la siguiente operación, esto es así por la forma en que XV6 y su scheduler están implementados.
+
+
+### Cuarta Parte: Implementando MLFQ
+
+__1) ¿Se puede producir starvation en el nuevo planificador?__  
+__Respuesta:__ Si, se puede producir starvation dado que no se realiza priority boost. Si ocurre el hecho de que hay muchos procesos que realizan IO que las CPU disponibles no llegan a finalizar las ejecuciones antes de llegar a un proceso CPU Bound entonces dicho proceso no se va a ejecutar.
+
+__Mediciones con el Scheduler MLFQ que implementamos:__
+
+__Condiciones de testeo (Igual que con RR):__  
+En cpubench.c se reemplazó el tipo __FLOAT__ de los arreglos bidimensionales “a”, “b”, “c” por INT y lo mismo en la variable beta de la función main().  
+Cada test se ejecutó durante un lapso de tiempo de 10 m en cada caso.  
+__Versión QEMU 4.2.__  
+
+__Casos:__  
+  - IOBench solo.   
+  - CPUBench solo.  
+  - IOBench y CPUBench juntos.  
+  - Dos IOBench juntos.  
+  - Dos CPUBench juntos.  
+
+__Resultados de las mediciones realizadas:__
+
+### Casos 1 al 5 con Quantum = 1000000, Min Ticks = 100
+
+![](https://preview.redd.it/kf3km9ur7uv91.png?width=640&format=png&auto=webp&s=ff0bd3e727fa4ea103c0ad1b493c8169179c9ae9 )
+
+
+### Casos 1 al 5 con Quantum = 100000, Min Ticks = 1000
+
+
+![](https://preview.redd.it/7ss246bt7uv91.png?width=640&format=png&auto=webp&s=2215344d867b23048135741505d53eefe5953df3)
+
+### Casos 1 al 5 con Quantum = 10000, Min Ticks = 10000
+
+
+![](https://preview.redd.it/ecfkl7ur7uv91.png?width=640&format=png&auto=webp&s=e34a8c97ac9665936aebd1d9b8f15e207bce7df4 )
+
+
+### Casos 1 al 5 con Quantum = 1000, Min Ticks = 100000
+
+![](https://preview.redd.it/93mnp7ur7uv91.png?width=640&format=png&auto=webp&s=1370ae6c746626f1e82e9a29e52b64a44d484adc )
+
+### __Comparación compacta entre las mediciones con RR y MLFQ:__
+
+![](https://preview.redd.it/3f00j7ur7uv91.png?width=832&format=png&auto=webp&s=ed2412e47f8882b90c9434b34e92e36c292496f2 )
+
+
+__Conclusiones de esta ronda de mediciones:__
+
+Es claro ver que MLFQ es mucho mejor que RR para el uso dado.
+El único caso interesante donde se ven las ventajas del MLFQ es en el caso 2, un proceso A=cpu-bound  y uno B=io-bound ejecutando en simultáneo. Con el escheduler RR, el proceso B se ejecutaría una vez por quantum, ya que suponiendo el caso que se está ejecutando el proceso A y es interrumpido por el timer, luego se planifica B, este se ejecuta un tiempo mínimo y comienza con las operaciones de lectura/escritura, su estado se actualiza a sleeping y se vuelve a planificar A. Recién cuando B haya terminado y genere una interrupción por dispositivo, se cambiará su estado de sleeping a runnable, por ende entrará en la cola para ser planificado. Pero esto no implica que vaya a interrumpir la ejecución del proceso A, sino que va a esperar a que este termine o sea interrumpido por el timer para volver a ser planificado. En cambio en MLFQ, esta interrupción si ocurre, una vez que el proceso B termina con las operaciones de lectura/escritura, su estado cambia de sleeping a runnable y es planificado de nuevo. Esto genera la posibilidad de starvation.
+
+
+
+## __Conclusión del Laboratorio:__ 
+
+El trabajo de laboratorio estuvo interesante, requirió mucho trabajo de interpretación de código y nos sirvió para reafirmar lo conceptos aprendidos en el teorico sobre politicas de planificacion. Aún así estuvo particularmente difícil dado que también fue necesario deducir algunos comportamientos de instrucciones de XV6 y los efectos de las mismas en el procesador, cosas como el timer interrupt, el cómo se manejan las interrupciones por dispositivos, etc.
+
+Más allá de las particularidades, en términos generales el laboratorio fue muy útil para poder meterse a manipular el código de un sistema operativo real y en una parte tan crítica como el scheduler, y a su vez poder comparar los resultados de dichos cambios con las mediciones obtenidas.
+
+
+
+
+
